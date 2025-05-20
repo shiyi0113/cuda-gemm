@@ -28,3 +28,16 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 else()
     target_compile_options(vectorAdd_cute PRIVATE -lineinfo)
 endif()
+
+add_executable(hgemm_cute_v0_naive hgemm_cute_v0_naive.cu)
+target_link_libraries(hgemm_cute_v0_naive PRIVATE 
+    CUDA::cudart 
+    CUDA::cublas
+    )
+
+target_include_directories(hgemm_cute_v0_naive PRIVATE ${CUTLASS_PATH} ${CUTLASS_UTIL_PATH})
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(hgemm_cute_v0_naive PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:$<$<CONFIG:Debug>:-O0 -G>>)
+else()
+    target_compile_options(hgemm_cute_v0_naive PRIVATE -lineinfo)
+endif()

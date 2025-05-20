@@ -15,42 +15,42 @@ __global__ void vector_add_local_tile_multi_elem_per_thread_half(
     { // 未处理非对齐问题
         return;
     }
-
+    // 完整数据：创建全局内存的tensor
     Tensor tz = make_tensor(make_gmem_ptr(z), make_shape(num));
     Tensor tx = make_tensor(make_gmem_ptr(x), make_shape(num));
     Tensor ty = make_tensor(make_gmem_ptr(y), make_shape(num));
-    // 
+    // 每个线程处理的数据:从原始tensor中创建tile
     Tensor tzr = local_tile(tz, make_shape(Int<kNumElemPerThread>{}), make_coord(idx));
     Tensor txr = local_tile(tx, make_shape(Int<kNumElemPerThread>{}), make_coord(idx));
     Tensor tyr = local_tile(ty, make_shape(Int<kNumElemPerThread>{}), make_coord(idx));
-
+    // 寄存器数据:创建与tile相同形状的新tensor
     Tensor txR = make_tensor_like(txr);
     Tensor tyR = make_tensor_like(tyr);
     Tensor tzR = make_tensor_like(tzr);
 
+    // copy:从全局内存到寄存器 128位加载指令
     // LDG.128
-
     copy(txr, txR);
     copy(tyr, tyR);
 
-    half2 a2 = {a, a};
-    half2 b2 = {b, b};
-    half2 c2 = {c, c};
-
+    // 将half类型解释为half2类型
     auto tzR2 = recast<half2>(tzR);
     auto txR2 = recast<half2>(txR);
     auto tyR2 = recast<half2>(tyR);
-
+    // 将half类型解释为half2类型
+    half2 a2 = {a, a};
+    half2 b2 = {b, b};
+    half2 c2 = {c, c};
 #pragma unroll
     for (int i = 0; i < size(tzR2); ++i)
     {
-        // two hfma2 instruction
+        // 计算，一次计算两个half
         tzR2(i) = txR2(i) * a2 + (tyR2(i) * b2 + c2);
     }
-
+    // 结果变回half类型
     auto tzRx = recast<half>(tzR2);
 
-    // STG.128
+    // 计算结果写回全局内存 128位
     copy(tzRx, tzr);
 }
 
@@ -75,11 +75,11 @@ int main(int argc, char **argv)
     vector_add_local_tile_multi_elem_per_thread_half<8><<<Gird, Block>>>(
         thrust::raw_pointer_cast(d_Z.data()), // 获取 d_Z 的设备指针
         num,
-        thrust::raw_pointer_cast(d_A.data()), // 获取 d_A 的设备指针
-        thrust::raw_pointer_cast(d_B.data()), // 获取 d_B 的设备指针
+        thrust::raw_pointer_cast(d_A.data()), 
+        thrust::raw_pointer_cast(d_B.data()), 
         static_cast<half>(1.0f),              // 将 1.0f 转换为 half
-        static_cast<half>(1.0f),              // 将 1.0f 转换为 half
-        static_cast<half>(0.0f)               // 将 1.0f 转换为 half
+        static_cast<half>(1.0f),              
+        static_cast<half>(0.0f)               
     );
     thrust::host_vector<half> add_result = d_Z;
     for (int j = 0; j < 10; j++)
