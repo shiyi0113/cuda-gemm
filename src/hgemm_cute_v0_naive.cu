@@ -5,13 +5,47 @@
 
 #include <cublas_v2.h>
 
+template <typename LayoutType>
+bool save_latex_to_file(const LayoutType &layout, const std::string &filename)
+{
+    // 创建要捕获输出的文件
+    FILE *file = fopen(filename.c_str(), "w");
+    if (!file)
+    {
+        std::cerr << "无法打开文件: " << filename << std::endl;
+        return false;
+    }
+
+    // 保存原始的stdout
+    int original_stdout = dup(fileno(stdout));
+
+    // 重定向stdout到文件
+    dup2(fileno(file), fileno(stdout));
+
+    // 调用print_latex，现在应该输出到文件
+    print_latex(layout);
+
+    // 冲洗缓冲区
+    fflush(stdout);
+
+    // 恢复原始stdout
+    dup2(original_stdout, fileno(stdout));
+    close(original_stdout);
+
+    // 关闭文件
+    fclose(file);
+
+    std::cout << "已尝试保存LaTeX到文件: " << filename << std::endl;
+    return true;
+}
+
 template <typename TA, typename TB, typename TC, int kTileM, int kTileN, int kTileK, typename TiledMMA>
 __global__ void gemm_cute_naive(TC *Cptr, const TA *Aptr, const TB *Bptr, int m, int n, int k)
 {
     using namespace cute;
-    Tensor A = make_tensor(make_gmem_ptr(Aptr), make_shape(m, k), make_stride(k, Int<1>{}));
-    Tensor B = make_tensor(make_gmem_ptr(Bptr), make_shape(n, k), make_stride(k, Int<1>{}));
-    Tensor C = make_tensor(make_gmem_ptr(Cptr), make_shape(m, n), make_stride(n, Int<1>{}));
+    Tensor A = make_tensor(make_gmem_ptr(Aptr), make_shape(m, k), make_stride(k, Int<1>{}));  //(m,k):(k,1) //(81920,256):(256,1)
+    Tensor B = make_tensor(make_gmem_ptr(Bptr), make_shape(n, k), make_stride(k, Int<1>{}));  //(n,k):(k,1) //(256  ,256):(256,1) 
+    Tensor C = make_tensor(make_gmem_ptr(Cptr), make_shape(m, n), make_stride(n, Int<1>{}));  //(m,n):(n,1) //(81920,256):(256,1)
 
     int ix = blockIdx.x;
     int iy = blockIdx.y;
@@ -19,47 +53,46 @@ __global__ void gemm_cute_naive(TC *Cptr, const TA *Aptr, const TB *Bptr, int m,
     Tensor gA = local_tile(A, make_tile(Int<kTileM>{}, Int<kTileK>{}), make_coord(iy, _));
     Tensor gB = local_tile(B, make_tile(Int<kTileN>{}, Int<kTileK>{}), make_coord(ix, _));
     Tensor gC = local_tile(C, make_tile(Int<kTileM>{}, Int<kTileN>{}), make_coord(iy, ix));
-    //  gA(kTileM, kTileK, num_tile_k)
-    //  gB(kTileN, kTileK, num_tile_k)
-    //  gC(kTileM, kTileN)
+    //  gA(kTileM, kTileK, num_tile_k) //(128,64 ,4):(256,1,64)
+    //  gB(kTileN, kTileK, num_tile_k) //(128,64 ,4):(256,1,64)
+    //  gC(kTileM, kTileN)             //(128,128  ):(256,1) 
 
     TiledMMA tiled_mma;
     auto thr_mma = tiled_mma.get_slice(threadIdx.x);
-    auto tAgA = thr_mma.partition_A(gA); // (MMA, MMA_M, MMA_K, num_tile_k)
-    auto tBgB = thr_mma.partition_B(gB); // (MMA, MMA_N, MMA_K, num_tile_k)
-    auto tCgC = thr_mma.partition_C(gC); // (MMA, MMA_M, MMA_N)
+    auto tAgA = thr_mma.partition_A(gA); // (MMA, MMA_M, MMA_K, num_tile_k)  ((_2,_2,_2),_8 ,_4 ,4):((_1,2048,_8),4096,_16,_64)
+    auto tBgB = thr_mma.partition_B(gB); // (MMA, MMA_N, MMA_K, num_tile_k)  ((_2,_2)   ,_16,_4 ,4):((_1,_8),2048,_16,_64)
+    auto tCgC = thr_mma.partition_C(gC); // (MMA, MMA_M, MMA_N)              ((_2,_2)   ,_8 ,_16)  :((_1,2048),4096,_8)
 
-    auto tArA = thr_mma.partition_fragment_A(gA(_, _, 0)); // (MMA, MMA_M, MMA_K)
-    auto tBrB = thr_mma.partition_fragment_B(gB(_, _, 0)); // (MMA, MMA_N, MMA_K)
-    auto tCrC = thr_mma.partition_fragment_C(gC(_, _));    // (MMA, MMA_M, MMA_N)
+    auto tArA = thr_mma.partition_fragment_A(gA(_, _, 0)); // (MMA, MMA_M, MMA_K)  ((_2,_2,_2),_8 ,_4 ):((_1,_2,_4),_32,_8)
+    auto tBrB = thr_mma.partition_fragment_B(gB(_, _, 0)); // (MMA, MMA_N, MMA_K)  ((_2,_2)   ,_16,_4 ):((_1,_2)   ,_16,_4)
+    auto tCrC = thr_mma.partition_fragment_C(gC(_, _));    // (MMA, MMA_M, MMA_N)  ((_2,_2)   ,_8 ,_16):((_1,_2)   ,_4 ,_32)
 
     clear(tCrC);
 
     int num_tile_k = size<2>(gA);
-#pragma unroll 1
+
     for (int itile = 0; itile < num_tile_k; ++itile)
     {
-        cute::copy(tAgA(_, _, _, itile), tArA);
-        cute::copy(tBgB(_, _, _, itile), tBrB);
-
-        cute::gemm(tiled_mma, tCrC, tArA, tBrB, tCrC);
+        cute::copy(tAgA(_, _, _, itile), tArA);        // g->r
+        cute::copy(tBgB(_, _, _, itile), tBrB);        // g->r
+        cute::gemm(tiled_mma, tCrC, tArA, tBrB, tCrC); // gemm   C = A * B + C
     }
 
-    cute::copy(tCrC, tCgC);
+    cute::copy(tCrC, tCgC);  // r->g
 }
 
 int main()
 {
     using namespace cute;
-    int m = 81920;
-    int n = 256;
-    int k = 256;
+    const int m = 81920;
+    const int n = 256;
+    const int k = 256;
     using TA = half;
     using TB = half;
     using TC = half;
     const int kTileN = 128;
     const int kTileM = 128;
-    const int kTileK = 32;
+    const int kTileK = 64;
 
     thrust::host_vector<TA> h_A(m * k);
     thrust::host_vector<TB> h_B(k * n);
@@ -67,7 +100,7 @@ int main()
 
     for (int j = 0; j < m * k; ++j)
         h_A[j] = static_cast<TA>(2 * (rand() / double(RAND_MAX)) - 1);
-    for (int j = 0; j < k * n; ++j)
+    for (int j = 0; j < k * n; ++j)  
         h_B[j] = static_cast<TB>(2 * (rand() / double(RAND_MAX)) - 1);
     for (int j = 0; j < m * n; ++j)
         h_C[j] = static_cast<TC>(-1);
@@ -81,8 +114,10 @@ int main()
     using mma_atom = cute::MMA_Atom<mma_traits>;
 
     using MMA = decltype(make_tiled_mma(mma_atom{},
-                                        make_layout(Shape<_2, _2, _1>{}),
-                                        make_layout(Shape<_1, _2, _1>{})));
+                                        make_layout(Shape<_1, _1, _1>{}),
+                                        Tile<_16,_8,_16>{}));
+
+    save_latex_to_file(MMA{},"MMA"); 
     dim3 block(size(MMA{}));
     dim3 grid(n / kTileN, m / kTileM);
     gemm_cute_naive<TA, TB, TC, kTileM, kTileN, kTileK, MMA><<<grid, block>>>(

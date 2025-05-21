@@ -8,7 +8,6 @@ target_link_libraries(sgemm_cute PRIVATE
     CUDA::cudart 
     CUDA::cublas
     )
-
 target_include_directories(sgemm_cute PRIVATE ${CUTLASS_PATH} ${CUTLASS_UTIL_PATH})
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(sgemm_cute PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:$<$<CONFIG:Debug>:-O0 -G>>)
@@ -16,18 +15,20 @@ else()
     target_compile_options(sgemm_cute PRIVATE -lineinfo)
 endif()
 
+
+
 add_executable(vectorAdd_cute vectorAdd_cute.cu)
 target_link_libraries(vectorAdd_cute PRIVATE 
     CUDA::cudart 
     CUDA::cublas
     )
-
 target_include_directories(vectorAdd_cute PRIVATE ${CUTLASS_PATH} ${CUTLASS_UTIL_PATH})
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(vectorAdd_cute PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:$<$<CONFIG:Debug>:-O0 -G>>)
 else()
     target_compile_options(vectorAdd_cute PRIVATE -lineinfo)
 endif()
+
 
 add_executable(hgemm_cute_v0_naive hgemm_cute_v0_naive.cu)
 target_link_libraries(hgemm_cute_v0_naive PRIVATE 
